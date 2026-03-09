@@ -1,0 +1,19 @@
+{
+  "name": "resource-maxxing",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down -v",
+    "loadtest": "node scripts/loadtest.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "autocannon": "^8.0.0"
+  }
+}
