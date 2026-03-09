@@ -12,7 +12,8 @@ const UUIDS = Array.from({ length: NUM_SELLERS }, (_, i) => {
 
 const TARGET = process.env.TARGET || "http://localhost:3000";
 const DURATION = parseInt(process.env.DURATION || "10", 10);
-const CONNECTIONS = parseInt(process.env.CONNECTIONS || "10", 10);
+const CONNECTIONS = parseInt(process.env.CONNECTIONS || "100", 10);
+const WORKERS = parseInt(process.env.WORKERS || String(os.cpus().length), 10);
 
 function sampleCpu() {
   const cpus = os.cpus();
@@ -25,7 +26,7 @@ function sampleCpu() {
 
 async function run() {
   console.log(
-    `Load test: ${CONNECTIONS} connections for ${DURATION}s against ${TARGET}`
+    `Load test: ${CONNECTIONS} connections, ${WORKERS} workers for ${DURATION}s against ${TARGET}`
   );
 
   const cpuSnapshots = [];
@@ -33,19 +34,14 @@ async function run() {
     cpuSnapshots.push({ ts: Date.now(), cores: sampleCpu() });
   }, 1000);
 
-  let reqIndex = 0;
+  const requests = UUIDS.map((uuid) => ({ path: `/api/data/${uuid}`, method: "GET" }));
+
   const result = await autocannon({
     url: TARGET,
     connections: CONNECTIONS,
     duration: DURATION,
-    requests: [
-      {
-        setupRequest(req) {
-          const uuid = UUIDS[reqIndex++ % UUIDS.length];
-          return { ...req, path: `/api/data/${uuid}` };
-        },
-      },
-    ],
+    workers: WORKERS,
+    requests,
   });
 
   clearInterval(cpuInterval);
@@ -62,6 +58,7 @@ async function run() {
       target: TARGET,
       duration: DURATION,
       connections: CONNECTIONS,
+      workers: WORKERS,
     },
     latency: {
       avg: result.latency.average,

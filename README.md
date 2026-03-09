@@ -13,18 +13,23 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 | Step | Optimization | Req/s | Improvement |
 |------|-------------|-------|-------------|
 | 0 | Baseline (untuned Express + pg) | 5,426 | -- |
+| 1 | Cluster mode + prepared statements + pool scaling | 8,950 | 1.65x |
 
-**Target: 100,000 req/s** -- we need an ~18x improvement from here.
+**Target: 100,000 req/s** -- we need an ~11x improvement from here.
 
 ## Architecture
 
 ```
-[autocannon] --HTTP--> [Express.js] --SQL--> [PostgreSQL in Docker]
+                          ┌─ Worker 1  (Express + pg pool)
+                          ├─ Worker 2  (Express + pg pool)
+[autocannon] ──HTTP──►  ──┤    ...          ──►  [PostgreSQL in Docker]
+  (10 workers,            ├─ Worker 9  (Express + pg pool)
+   100 conns)             └─ Worker 10 (Express + pg pool)
 ```
 
-- **API**: Single endpoint `GET /api/data/:uuid` that queries a `records` table by `group_id` and returns JSON.
-- **Database**: PostgreSQL 16 in Docker. 100,000 rows of seed data (5,000 sellers x 20 items each), B-tree index on `group_id`.
-- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with CPU sampling, results saved as JSON to `results/`.
+- **API**: `GET /api/data/:uuid` -- queries `records` by `group_id`, returns JSON. Runs in **cluster mode** across all CPU cores.
+- **Database**: PostgreSQL 16 in Docker. 100,000 rows (5,000 sellers x 20 items), B-tree index on `group_id`. Uses **prepared statements** and cluster-aware connection pooling (80 total).
+- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with **multi-worker threads**, 100 connections, CPU sampling, results saved as JSON to `results/`.
 
 ## Quick Start
 
@@ -64,8 +69,8 @@ npm run loadtest
 ```
 .
 ├── src/
-│   ├── server.js          # Express API server
-│   └── db.js              # PostgreSQL connection pool + queries
+│   ├── server.js          # Clustered Express API server (multi-core)
+│   └── db.js              # PostgreSQL pool + prepared statements
 ├── db/
 │   └── init.sql           # Schema, indexes, and seed data
 ├── scripts/

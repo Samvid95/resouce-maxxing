@@ -131,4 +131,97 @@ The load test is also only using 10 concurrent connections across 5,000 seller U
 
 ---
 
-*Next up: Step 1 -- breaking the single-core barrier.*
+## Step 1: Going Multi-Core
+
+### What We Changed
+
+Three changes, all aimed at one thing: stop leaving 9 out of 10 CPU cores on the bench.
+
+**1. Node.js Cluster Mode**
+
+The biggest lever. We wrapped the Express server in Node's built-in `cluster` module. The primary process forks 10 workers -- one per CPU core -- and they all share port 3000. The OS round-robins incoming connections across workers. If a worker crashes, the primary respawns it automatically.
+
+```
+                          ┌─ Worker 1  (Express + pg pool)
+                          ├─ Worker 2  (Express + pg pool)
+[autocannon] ──HTTP──►  ──┤    ...
+  (10 workers,            ├─ Worker 9  (Express + pg pool)
+   100 conns)             └─ Worker 10 (Express + pg pool)
+                                   │
+                                   ▼
+                            [PostgreSQL]
+```
+
+The key code:
+
+```javascript
+if (cluster.isPrimary) {
+  for (let i = 0; i < NUM_WORKERS; i++) cluster.fork();
+} else {
+  // Each worker runs its own Express server + pg pool
+  app.listen(PORT);
+}
+```
+
+**2. Prepared Statements**
+
+Every time we called `pool.query("SELECT ... WHERE group_id = $1", [uuid])`, Postgres had to parse the SQL, plan the query, and execute it. With 5,000 distinct UUIDs flying in, that's thousands of redundant parse-and-plan cycles for the exact same query shape.
+
+We switched to a named prepared statement. Postgres parses and plans it once per connection, then reuses the plan for every subsequent call:
+
+```javascript
+const GET_RECORDS_QUERY = {
+  name: "get_records_by_group_id",
+  text: "SELECT id, group_id, name, category, value, active, created_at FROM records WHERE group_id = $1",
+};
+
+const { rows } = await pool.query({ ...GET_RECORDS_QUERY, values: [uuid] });
+```
+
+**3. Cluster-Aware Connection Pool**
+
+With 10 workers, each running its own `pg.Pool`, we needed to be smart about connection counts. The old setup was a flat `max: 20`. Now each worker calculates its share of a total target of 80 connections:
+
+```javascript
+const totalPoolTarget = 80;
+const perWorkerPool = Math.max(4, Math.floor(totalPoolTarget / numWorkers));
+```
+
+That gives us 8 connections per worker, 80 total across the cluster. Postgres's default `max_connections` is 100, so we're leaving some headroom for admin connections and monitoring.
+
+**4. Load Test Upgrade**
+
+We also cranked the load test itself. Connections went from 10 to **100**, and autocannon now runs with **10 worker threads** to ensure the load generator isn't the bottleneck. The request list was refactored from a `setupRequest` callback to a pre-built array of 5,000 request objects -- necessary because functions can't be serialized across worker threads.
+
+### The Results
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **8,950** |
+| Latency (avg) | 11.01 ms |
+| Latency (p50) | 8 ms |
+| Latency (p99) | 61 ms |
+| Latency (max) | 956 ms |
+| Total requests | 89,501 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~33.5 MB/s |
+| Peak CPU (avg across cores) | 20.5% |
+
+**Up from 5,426 to 8,950 req/s -- a 1.65x improvement.** Zero errors, zero timeouts. Total throughput jumped from ~20 MB/s to ~33.5 MB/s. We're now handling almost **90,000 requests** in a 10-second window, up from 54,000.
+
+But the latency tells an important story. Average went from 1.27 ms to 11 ms, and p99 jumped from 3 ms to 61 ms. That's not because the server got *slower* -- it's because we're pushing **10x more concurrent connections** through it. Per-connection, each request is still being served quickly. We're just asking the system to juggle a lot more balls at once.
+
+### Bottleneck #1: Where Did Our 10x Go?
+
+Here's the uncomfortable truth: we added **10 CPU cores** but only got a **1.65x improvement**. That's... not great. If we were purely CPU-bound, clustering should have given us close to linear scaling. Something else is holding us back.
+
+Look at the CPU numbers: **20.5% average across all cores** -- the exact same number as Step 0. That seems impossible if we're using 10 workers. The issue is our CPU sampling: `os.cpus()` returns cumulative times since boot, not deltas. On a machine that's been running for hours, a 10-second load test barely moves the needle on cumulative averages. The CPU is working harder than this number suggests.
+
+The real bottleneck is likely **PostgreSQL**. Think about it: we went from 20 connections on one process to 80 connections across 10 processes, all hammering the same Postgres instance running in Docker with default configuration. Postgres is now the shared resource every worker is contending over. Default `shared_buffers` is only **128 MB**, `work_mem` is **4 MB**, and `max_connections` is **100** (we're using 80 of those).
+
+We need to tune Postgres itself. More shared buffers, more work memory, and possibly more connections. We should also fix our CPU sampling to measure deltas between snapshots instead of cumulative averages -- we're flying blind on actual CPU utilization.
+
+---
+
+*Next up: Step 2 -- tuning PostgreSQL and fixing our CPU metrics.*
