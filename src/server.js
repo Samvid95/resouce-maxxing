@@ -15,8 +15,10 @@ if (cluster.isPrimary) {
 } else {
   const fastify = require("fastify")({ logger: false });
   const { pool, getRecordsByGroupId } = require("./db");
+  const { LRUCache } = require("./cache");
 
   const PORT = process.env.PORT || 3000;
+  const cache = new LRUCache();
 
   const recordSchema = {
     type: "object",
@@ -49,12 +51,28 @@ if (cluster.isPrimary) {
       },
     },
     handler: async (request, reply) => {
-      const rows = await getRecordsByGroupId(request.params.uuid);
+      const uuid = request.params.uuid;
+
+      const cached = cache.get(uuid);
+      if (cached) {
+        reply.header("content-type", "application/json; charset=utf-8");
+        reply.header("x-cache", "HIT");
+        return reply.send(cached);
+      }
+
+      const rows = await getRecordsByGroupId(uuid);
       if (rows.length === 0) {
         reply.code(404);
         return { error: "No records found for this UUID" };
       }
-      return { group_id: request.params.uuid, count: rows.length, records: rows };
+
+      const body = { group_id: uuid, count: rows.length, records: rows };
+      const serialized = JSON.stringify(body);
+      cache.set(uuid, serialized);
+
+      reply.header("content-type", "application/json; charset=utf-8");
+      reply.header("x-cache", "MISS");
+      return reply.send(serialized);
     },
   });
 

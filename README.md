@@ -16,20 +16,21 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 | 1 | Cluster mode + prepared statements + pool scaling | 8,950 | 1.65x |
 | 2 | PostgreSQL tuning + fixed CPU measurement | 11,110 | 2.05x |
 | 3 | Fastify + schema serialization + load test right-sizing | 14,640 | 2.70x |
+| 4 | In-memory LRU response cache | 24,738 | 4.56x |
 
-**Target: 100,000 req/s** -- we need a ~7x improvement from here.
+**Target: 100,000 req/s** -- we need a ~4x improvement from here.
 
 ## Architecture
 
 ```
-                          ┌─ Worker 1  (Fastify + pg pool)
-                          ├─ Worker 2  (Fastify + pg pool)
+                          ┌─ Worker 1  (Fastify + LRU cache + pg pool)
+                          ├─ Worker 2  (Fastify + LRU cache + pg pool)
 [autocannon] ──HTTP──►  ──┤    ...          ──►  [PostgreSQL in Docker]
-  (2 workers,             ├─ Worker 9  (Fastify + pg pool)
-   200 conns)             └─ Worker 10 (Fastify + pg pool)
+  (2 workers,             ├─ Worker 9  (Fastify + LRU cache + pg pool)
+   200 conns)             └─ Worker 10 (Fastify + LRU cache + pg pool)
 ```
 
-- **API**: `GET /api/data/:uuid` -- queries `records` by `group_id`, returns JSON. **Fastify** with schema-based serialization, clustered across all CPU cores.
+- **API**: `GET /api/data/:uuid` -- returns JSON. **Fastify** with **per-worker LRU cache** (pre-serialized JSON strings), clustered across all CPU cores. Cache hits bypass both Postgres and serialization.
 - **Database**: PostgreSQL 16 in Docker with **custom tuning** (1 GB shared_buffers, synchronous_commit off, random_page_cost 1.1). Uses **prepared statements** and cluster-aware connection pooling (80 total).
 - **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with 2 workers, 200 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
 
@@ -72,6 +73,7 @@ npm run loadtest
 .
 ├── src/
 │   ├── server.js          # Clustered Fastify API server (multi-core)
+│   ├── cache.js           # Per-worker LRU cache (pre-serialized JSON)
 │   └── db.js              # PostgreSQL pool + prepared statements
 ├── db/
 │   ├── init.sql           # Schema, indexes, and seed data

@@ -404,4 +404,98 @@ At this point, the path forward splits. We could try to squeeze more out of the 
 
 ---
 
-*Next up: Step 4 -- caching responses and skipping the database.*
+## Step 4: In-Memory Caching -- Skipping the Database Entirely
+
+### What We Changed
+
+Every request in Steps 0-3 hit PostgreSQL. Every. Single. One. Even with prepared statements and a tuned Postgres config, that's still a network round-trip to Docker, a query plan execution, row fetching, and result serialization -- for data that *doesn't change during the test*. With only 5,000 distinct seller UUIDs, we're asking the same questions over and over and expecting different answers. Time to stop doing that.
+
+We added a **per-worker in-memory LRU cache** that stores pre-serialized JSON response strings. The flow now looks like this:
+
+```
+Request arrives
+    │
+    ▼
+Cache lookup (Map.get)
+    │
+    ├── HIT:  send cached JSON string directly ← no DB, no serialization
+    │
+    └── MISS: query Postgres → serialize → store in cache → send
+```
+
+Each of the 10 cluster workers maintains its own cache (no cross-process sharing, no locking). The cache uses JavaScript's `Map` as an ordered data structure -- on every access, the entry is deleted and re-inserted at the end, making the oldest entries naturally bubble to the front for eviction. It's a textbook LRU in ~30 lines:
+
+```javascript
+class LRUCache {
+  constructor(capacity = 10000, ttl = 60000) {
+    this.capacity = capacity;
+    this.ttl = ttl;
+    this.map = new Map();
+  }
+
+  get(key) {
+    const entry = this.map.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.ts > this.ttl) {
+      this.map.delete(key);
+      return undefined;
+    }
+    this.map.delete(key);
+    this.map.set(key, entry);
+    return entry.value;
+  }
+
+  set(key, value) {
+    this.map.delete(key);
+    if (this.map.size >= this.capacity) {
+      this.map.delete(this.map.keys().next().value);
+    }
+    this.map.set(key, { value, ts: Date.now() });
+  }
+}
+```
+
+The critical trick is *what* we cache. Not the database rows -- the **fully serialized JSON string**. On a cache hit, the handler does:
+
+```javascript
+const cached = cache.get(uuid);
+if (cached) {
+  reply.header("content-type", "application/json; charset=utf-8");
+  return reply.send(cached);
+}
+```
+
+That bypasses Fastify's schema serializer too. No `JSON.stringify`, no `fast-json-stringify`, no object traversal. Just raw bytes from memory straight to the socket. On a cache miss, we query Postgres, serialize once, store the string, and return it. Every subsequent request for that UUID is pure memory-to-socket.
+
+With 5,000 seller UUIDs, a 10,000-entry cache with 60-second TTL means the entire working set fits comfortably in each worker's cache. After the first pass through all UUIDs, the hit rate approaches **100%**.
+
+### The Results
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **24,738** |
+| Latency (avg) | 8.9 ms |
+| Latency (p50) | 5 ms |
+| Latency (p99) | 21 ms |
+| Latency (max) | 3,337 ms |
+| Total requests | 247,426 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~91.5 MB/s |
+| Peak CPU (avg across cores) | ~100% |
+
+**Up from 14,640 to 24,738 req/s -- a 1.69x improvement** over Step 3, and **4.56x over our original baseline**. We're now handling nearly **a quarter million requests** in a 10-second window. Throughput jumped from 53.8 to **91.5 MB/s** -- that's **730 megabits per second** of JSON. We're getting close to saturating a gigabit network interface.
+
+The latency story is dramatic. The p50 dropped from 13 ms to **5 ms** -- the median request is now twice as fast. Average fell from 15.71 to **8.9 ms**, and p99 improved from 28 to **21 ms**. Eliminating the Postgres round-trip on cached requests cut the per-request cost roughly in half.
+
+### Bottleneck #4: Pure CPU, No Escape
+
+We're at **~100% CPU** again, but now we're getting **24,738 req/s** out of those 10 cores -- up from 14,640 in Step 3. That's **69% more throughput per cycle**. The cache eliminated the biggest per-request cost (Postgres + serialization), and the remaining CPU is spent almost entirely on HTTP parsing, connection management, and event loop overhead.
+
+The max latency is still high at **3,337 ms**. These extreme outliers are GC pauses and OS scheduling jitter -- inevitable when the CPU is 100% saturated and V8 needs to stop the world for garbage collection. The gap between p99 (**21 ms**) and max (**3,337 ms**) is **159x**, which tells us 99% of requests are fast but the rare worst case is brutal.
+
+At this point, we've optimized away the database, the serialization, and the framework overhead. We're left with the raw cost of Node.js event loop + HTTP protocol processing. To go further, we'd need to either drop below Fastify to something like raw `http` module or `uWebSockets.js`, or find ways to reduce the per-request CPU cost at the Node.js runtime level -- HTTP pipelining, response compression trade-offs, or `Buffer` pre-allocation for cached responses.
+
+---
+
+*Next up: Step 5 -- squeezing the last drops from the HTTP layer.*
