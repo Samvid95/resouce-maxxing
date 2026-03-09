@@ -1,0 +1,71 @@
+{
+  "timestamp": "2026-03-09T18:22:24.388Z",
+  "config": {
+    "target": "http://localhost:3000",
+    "duration": 10,
+    "connections": 10
+  },
+  "latency": {
+    "avg": 1.27,
+    "p50": 1,
+    "p99": 3,
+    "max": 51
+  },
+  "throughput": {
+    "avgBytesPerSec": 20378828.8,
+    "totalBytes": 203805742
+  },
+  "requests": {
+    "avgPerSec": 5425.5,
+    "total": 54250
+  },
+  "errors": 0,
+  "timeouts": 0,
+  "statusCodes": {
+    "2xx": 54250,
+    "4xx": 0,
+    "5xx": 0
+  },
+  "cpu": [
+    {
+      "ts": 1773080535370,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080536369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080537369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080538369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080539369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080540369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080541369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080542369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080543369,
+      "avgCpuPct": 20.5
+    },
+    {
+      "ts": 1773080544369,
+      "avgCpuPct": 20.5
+    }
+  ]
+}

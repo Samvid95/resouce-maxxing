@@ -1,20 +1,14 @@
 const autocannon = require("autocannon");
+const crypto = require("crypto");
 const os = require("os");
 const fs = require("fs");
 const path = require("path");
 
-const UUIDS = [
-  "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
-  "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
-  "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
-  "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
-  "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f8091a2",
-  "17b8c9d0-e1f2-4a3b-4c5d-6e7f8091a2b3",
-  "28c9d0e1-f2a3-4b4c-5d6e-7f8091a2b3c4",
-  "39d0e1f2-a3b4-4c5d-6e7f-8091a2b3c4d5",
-  "40e1f2a3-b4c5-4d6e-7f80-91a2b3c4d5e6",
-];
+const NUM_SELLERS = 5000;
+const UUIDS = Array.from({ length: NUM_SELLERS }, (_, i) => {
+  const hex = crypto.createHash("md5").update("seller-" + i).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+});
 
 const TARGET = process.env.TARGET || "http://localhost:3000";
 const DURATION = parseInt(process.env.DURATION || "10", 10);
