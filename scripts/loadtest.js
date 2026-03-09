@@ -12,8 +12,8 @@ const UUIDS = Array.from({ length: NUM_SELLERS }, (_, i) => {
 
 const TARGET = process.env.TARGET || "http://localhost:3000";
 const DURATION = parseInt(process.env.DURATION || "10", 10);
-const CONNECTIONS = parseInt(process.env.CONNECTIONS || "100", 10);
-const WORKERS = parseInt(process.env.WORKERS || String(os.cpus().length), 10);
+const CONNECTIONS = parseInt(process.env.CONNECTIONS || "200", 10);
+const WORKERS = parseInt(process.env.WORKERS || "2", 10);
 
 function getCpuTimes() {
   return os.cpus().map((cpu) => {

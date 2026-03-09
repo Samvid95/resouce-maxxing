@@ -13,33 +13,73 @@ if (cluster.isPrimary) {
     cluster.fork();
   });
 } else {
-  const express = require("express");
+  const fastify = require("fastify")({ logger: false });
   const { pool, getRecordsByGroupId } = require("./db");
 
-  const app = express();
   const PORT = process.env.PORT || 3000;
 
-  app.get("/api/data/:uuid", async (req, res) => {
-    try {
-      const rows = await getRecordsByGroupId(req.params.uuid);
+  const recordSchema = {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      group_id: { type: "string" },
+      name: { type: "string" },
+      category: { type: "string" },
+      value: { type: "string" },
+      active: { type: "boolean" },
+      created_at: { type: "string" },
+    },
+  };
+
+  fastify.get("/api/data/:uuid", {
+    schema: {
+      response: {
+        200: {
+          type: "object",
+          properties: {
+            group_id: { type: "string" },
+            count: { type: "integer" },
+            records: { type: "array", items: recordSchema },
+          },
+        },
+        404: {
+          type: "object",
+          properties: { error: { type: "string" } },
+        },
+      },
+    },
+    handler: async (request, reply) => {
+      const rows = await getRecordsByGroupId(request.params.uuid);
       if (rows.length === 0) {
-        return res.status(404).json({ error: "No records found for this UUID" });
+        reply.code(404);
+        return { error: "No records found for this UUID" };
       }
-      res.json({ group_id: req.params.uuid, count: rows.length, records: rows });
-    } catch (err) {
-      console.error("Query error:", err.message);
-      res.status(500).json({ error: "Internal server error" });
-    }
+      return { group_id: request.params.uuid, count: rows.length, records: rows };
+    },
   });
 
-  app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  fastify.get("/health", {
+    schema: {
+      response: {
+        200: {
+          type: "object",
+          properties: { status: { type: "string" } },
+        },
+      },
+    },
+    handler: async () => ({ status: "ok" }),
+  });
 
-  const server = app.listen(PORT, () => {
+  fastify.listen({ port: PORT, host: "::" }, (err) => {
+    if (err) {
+      console.error(err);
+      process.exit(1);
+    }
     console.log(`Worker ${process.pid} listening on :${PORT}`);
   });
 
   process.on("SIGTERM", async () => {
-    server.close();
+    await fastify.close();
     await pool.end();
   });
 }

@@ -10,7 +10,7 @@
     "loadtest": "node scripts/loadtest.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
+    "fastify": "^5.8.2",
     "pg": "^8.13.0"
   },
   "devDependencies": {

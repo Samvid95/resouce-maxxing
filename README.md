@@ -15,22 +15,23 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 | 0 | Baseline (untuned Express + pg) | 5,426 | -- |
 | 1 | Cluster mode + prepared statements + pool scaling | 8,950 | 1.65x |
 | 2 | PostgreSQL tuning + fixed CPU measurement | 11,110 | 2.05x |
+| 3 | Fastify + schema serialization + load test right-sizing | 14,640 | 2.70x |
 
-**Target: 100,000 req/s** -- we need a ~9x improvement from here.
+**Target: 100,000 req/s** -- we need a ~7x improvement from here.
 
 ## Architecture
 
 ```
-                          ┌─ Worker 1  (Express + pg pool)
-                          ├─ Worker 2  (Express + pg pool)
+                          ┌─ Worker 1  (Fastify + pg pool)
+                          ├─ Worker 2  (Fastify + pg pool)
 [autocannon] ──HTTP──►  ──┤    ...          ──►  [PostgreSQL in Docker]
-  (10 workers,            ├─ Worker 9  (Express + pg pool)
-   100 conns)             └─ Worker 10 (Express + pg pool)
+  (2 workers,             ├─ Worker 9  (Fastify + pg pool)
+   200 conns)             └─ Worker 10 (Fastify + pg pool)
 ```
 
-- **API**: `GET /api/data/:uuid` -- queries `records` by `group_id`, returns JSON. Runs in **cluster mode** across all CPU cores.
+- **API**: `GET /api/data/:uuid` -- queries `records` by `group_id`, returns JSON. **Fastify** with schema-based serialization, clustered across all CPU cores.
 - **Database**: PostgreSQL 16 in Docker with **custom tuning** (1 GB shared_buffers, synchronous_commit off, random_page_cost 1.1). Uses **prepared statements** and cluster-aware connection pooling (80 total).
-- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with **multi-worker threads**, 100 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
+- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with 2 workers, 200 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
 
 ## Quick Start
 
@@ -59,7 +60,7 @@ npm run loadtest
 
 | Command | Description |
 |---------|-------------|
-| `npm start` | Start the Express server |
+| `npm start` | Start the Fastify server (clustered) |
 | `npm run dev` | Start with `--watch` for auto-reload |
 | `npm run db:up` | Start PostgreSQL in Docker |
 | `npm run db:down` | Stop and remove the database |
@@ -70,7 +71,7 @@ npm run loadtest
 ```
 .
 ├── src/
-│   ├── server.js          # Clustered Express API server (multi-core)
+│   ├── server.js          # Clustered Fastify API server (multi-core)
 │   └── db.js              # PostgreSQL pool + prepared statements
 ├── db/
 │   ├── init.sql           # Schema, indexes, and seed data

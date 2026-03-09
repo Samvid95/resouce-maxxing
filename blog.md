@@ -307,4 +307,101 @@ To go further, we need to either get more CPU (bigger machine) or get more throu
 
 ---
 
-*Next up: Step 3 -- replacing Express with something that doesn't waste cycles.*
+## Step 3: Fastify and Stopping the Load Test From Stealing CPU
+
+### What We Changed
+
+Two changes this time, both aimed at getting more throughput per CPU cycle.
+
+**1. Express → Fastify**
+
+Express has been the default Node.js framework since 2010. It's battle-tested, well-documented, and... slow. Every request passes through a middleware chain, creates new request/response wrapper objects, and serializes the response body using generic `JSON.stringify()`. When you're CPU-bound and handling 11K req/s, that overhead adds up.
+
+Fastify takes a different approach. Its core innovation is **schema-based serialization**: you define a JSON Schema for your response, and Fastify pre-compiles a dedicated serializer using `fast-json-stringify`. Instead of walking the object tree at runtime to figure out types and escaping (which is what `JSON.stringify()` does), the compiled serializer *already knows* the structure and generates the JSON string directly. For our 20-record response payload, that's a meaningful speedup -- we're serializing it 14,000+ times per second.
+
+The route definition now includes a response schema:
+
+```javascript
+const recordSchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    group_id: { type: "string" },
+    name: { type: "string" },
+    category: { type: "string" },
+    value: { type: "string" },
+    active: { type: "boolean" },
+    created_at: { type: "string" },
+  },
+};
+
+fastify.get("/api/data/:uuid", {
+  schema: {
+    response: {
+      200: {
+        type: "object",
+        properties: {
+          group_id: { type: "string" },
+          count: { type: "integer" },
+          records: { type: "array", items: recordSchema },
+        },
+      },
+    },
+  },
+  handler: async (request, reply) => {
+    const rows = await getRecordsByGroupId(request.params.uuid);
+    if (rows.length === 0) {
+      reply.code(404);
+      return { error: "No records found for this UUID" };
+    }
+    return { group_id: request.params.uuid, count: rows.length, records: rows };
+  },
+});
+```
+
+Fastify also has a faster radix-tree router (via `find-my-way`), lower per-request object allocation, and native support for `async` handlers without wrapping -- all small wins that compound at high request rates.
+
+**2. Stopped the Load Test From Hogging CPU**
+
+In Step 2, we discovered the machine was at 100% CPU with **10 Node.js server workers** and **10 autocannon worker threads** fighting for 10 cores. The load generator was eating half the CPU.
+
+Here's the thing about HTTP load generators: they're I/O-bound, not CPU-bound. Sending HTTP requests and reading responses is almost entirely network I/O. You don't need 10 cores for that. We dropped autocannon from **10 workers to 2** and bumped connections from **100 to 200** to maintain pressure. The server now gets the lion's share of the CPU.
+
+```
+                          ┌─ Worker 1  (Fastify + pg pool)
+                          ├─ Worker 2  (Fastify + pg pool)
+[autocannon] ──HTTP──►  ──┤    ...          ──►  [PostgreSQL]
+  (2 workers,             ├─ Worker 9  (Fastify + pg pool)
+   200 conns)             └─ Worker 10 (Fastify + pg pool)
+```
+
+### The Results
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **14,640** |
+| Latency (avg) | 15.71 ms |
+| Latency (p50) | 13 ms |
+| Latency (p99) | 28 ms |
+| Latency (max) | 3,931 ms |
+| Total requests | 146,379 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~53.8 MB/s |
+| Peak CPU (avg across cores) | ~100% |
+
+**Up from 11,110 to 14,640 req/s -- a 1.32x improvement** over Step 2, and **2.7x over our original baseline**. We blew past the 100K-in-10-seconds mark with nearly **146,000 total requests**. Throughput jumped from 41.6 to **53.8 MB/s** -- that's over half a gigabit of JSON flying over the wire every second.
+
+The p99 latency actually *improved* from 33 ms to **28 ms** despite doubling connections from 100 to 200. That's the combined effect of Fastify's lower per-request overhead and freeing up 8 CPU cores by shrinking autocannon. Less context switching, fewer processes competing for time slices.
+
+### Bottleneck #3: We're Still CPU-Bound, But Burning Smarter
+
+The machine is still pegged at **~100% CPU**. We're saturated. But we're now getting **14,640 req/s** out of those same 10 cores, up from 11,110. That's **32% more throughput per CPU cycle** -- the Fastify switch and autocannon right-sizing are doing real work.
+
+The max latency spike to **3,931 ms** is concerning though. That's nearly 4 seconds for a single request. The average is 15.71 ms and p99 is 28 ms, so 99% of requests are fine -- but something is causing rare, extreme outliers. With 200 connections and 10 server workers, some requests are likely getting stuck behind garbage collection pauses or OS-level scheduling delays when the CPU is this saturated.
+
+At this point, the path forward splits. We could try to squeeze more out of the framework layer by switching to something even lower-level like `uWebSockets.js`, or we could attack the problem from a completely different angle: **stop hitting the database entirely**. If we cache responses in memory, we eliminate the Postgres round-trip and the serialization cost for repeated UUIDs. With 5,000 distinct sellers, a warm cache would mean most requests never touch the database.
+
+---
+
+*Next up: Step 4 -- caching responses and skipping the database.*
