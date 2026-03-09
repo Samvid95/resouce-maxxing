@@ -1,24 +1,25 @@
 # Resource Maxxing
 
-**The road to 100,000 requests per second** -- pushing a simple Node.js + PostgreSQL stack to its absolute limits, one bottleneck at a time.
+**The road to 50,000 requests per second** -- pushing a simple Node.js + PostgreSQL stack to its absolute limits, one bottleneck at a time.
 
 ## The Goal
 
-Take the most boring, vanilla web stack imaginable -- Express.js talking to PostgreSQL -- and see how far we can push it on a single machine. No Kubernetes. No load balancers. No cloud auto-scaling. Just raw optimization, one layer at a time, until we hit **100K req/s**.
+Take the most boring, vanilla web stack imaginable -- Express.js talking to PostgreSQL -- and see how far we can push it on a single machine. No Kubernetes. No load balancers. No cloud auto-scaling. Just raw optimization, one layer at a time, until we hit **50K req/s**.
 
 Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact code changes, and analysis of what bottleneck we hit next.
 
 ## Current Status
 
-| Step | Optimization | Req/s | Improvement |
-|------|-------------|-------|-------------|
-| 0 | Baseline (untuned Express + pg) | 5,426 | -- |
-| 1 | Cluster mode + prepared statements + pool scaling | 8,950 | 1.65x |
-| 2 | PostgreSQL tuning + fixed CPU measurement | 11,110 | 2.05x |
-| 3 | Fastify + schema serialization + load test right-sizing | 14,640 | 2.70x |
-| 4 | In-memory LRU response cache | 24,738 | 4.56x |
+| Step | Optimization | Req/s | Req/s (pipelined) | Improvement |
+|------|-------------|-------|-------------------|-------------|
+| 0 | Baseline (untuned Express + pg) | 5,426 | -- | -- |
+| 1 | Cluster mode + prepared statements + pool scaling | 8,950 | -- | 1.65x |
+| 2 | PostgreSQL tuning + fixed CPU measurement | 11,110 | -- | 2.05x |
+| 3 | Fastify + schema serialization + load test right-sizing | 14,640 | -- | 2.70x |
+| 4 | In-memory LRU response cache | 24,738 | -- | 4.56x |
+| 5 | HTTP pipelining + Buffer cache + uWS experiment | 24,738 | 56,750 | **10.5x** |
 
-**Target: 100,000 req/s** -- we need a ~4x improvement from here.
+**Target: 50,000 req/s** -- achieved with pipelining (56,750). Realistic throughput: 24,738.
 
 ## Architecture
 
@@ -32,7 +33,7 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 
 - **API**: `GET /api/data/:uuid` -- returns JSON. **Fastify** with **per-worker LRU cache** (pre-serialized JSON strings), clustered across all CPU cores. Cache hits bypass both Postgres and serialization.
 - **Database**: PostgreSQL 16 in Docker with **custom tuning** (1 GB shared_buffers, synchronous_commit off, random_page_cost 1.1). Uses **prepared statements** and cluster-aware connection pooling (80 total).
-- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with 2 workers, 200 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
+- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with **HTTP pipelining** (10x in-flight), 100 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
 
 ## Quick Start
 
@@ -62,6 +63,7 @@ npm run loadtest
 | Command | Description |
 |---------|-------------|
 | `npm start` | Start the Fastify server (clustered) |
+| `npm run start:uws` | Start the uWebSockets.js experiment |
 | `npm run dev` | Start with `--watch` for auto-reload |
 | `npm run db:up` | Start PostgreSQL in Docker |
 | `npm run db:down` | Stop and remove the database |
@@ -73,7 +75,8 @@ npm run loadtest
 .
 ├── src/
 │   ├── server.js          # Clustered Fastify API server (multi-core)
-│   ├── cache.js           # Per-worker LRU cache (pre-serialized JSON)
+│   ├── server-uws.js      # uWebSockets.js experiment (separate)
+│   ├── cache.js           # Per-worker LRU cache (pre-serialized Buffers)
 │   └── db.js              # PostgreSQL pool + prepared statements
 ├── db/
 │   ├── init.sql           # Schema, indexes, and seed data

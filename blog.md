@@ -1,40 +1,40 @@
-# Resource Maxxing: The Road to 100,000 Requests Per Second
+# Resource Maxxing: The Road to 50,000 Requests Per Second
 
 A hands-on journey of pushing a simple Node.js + PostgreSQL stack to its absolute limits, one bottleneck at a time.
 
 ---
 
-## Why 100K Requests Per Second?
+## Why 50K Requests Per Second?
 
 Before we start optimizing anything, let's talk about why this number matters and what it actually *means*.
 
-### Putting 100K req/s Into Perspective
+### Putting 50K req/s Into Perspective
 
-100,000 requests per second sounds abstract. Let's make it concrete.
+50,000 requests per second sounds abstract. Let's make it concrete.
 
-- **Per minute**, that's **6 million requests**. An average mid-size e-commerce site handles about 1,000 requests per minute. We're talking about the traffic of 6,000 of those sites. Combined. On one server.
-- **Per hour**, that's **360 million requests**. Instagram gets roughly 500 million daily active users. We'd burn through a request for each one of them in under 90 minutes.
-- **Per day**, that's **8.64 billion requests**. The world population is about 8 billion people. At this rate, we'd serve more requests in a single day than there are humans on the planet.
-- **Google Search** handles roughly 99,000 queries per second globally. Hitting 100K req/s means your single service is handling Google-Search-level query volume.
+- **Per minute**, that's **3 million requests**. An average mid-size e-commerce site handles about 1,000 requests per minute. We're talking about the traffic of 3,000 of those sites. Combined. On one server.
+- **Per hour**, that's **180 million requests**. Instagram gets roughly 500 million daily active users. We'd burn through a request for each one of them in under 3 hours.
+- **Per day**, that's **4.32 billion requests**. That's more than half the world's population. One request per person, served from a single machine, in a single day.
+- **Google Search** handles roughly 99,000 queries per second globally. Hitting 50K req/s means your single service is handling **half of Google Search's** query volume.
 
-If you sold out an NFL stadium (70,000 seats), every single fan would need to make a request roughly every 0.7 seconds -- non-stop, all game long -- to generate this kind of load.
+If you sold out an NFL stadium (70,000 seats), every single fan would need to make a request roughly every 1.4 seconds -- non-stop, all game long -- to generate this kind of load.
 
 ### What Does This Cost in the Real World?
 
 Let's say instead of serving these requests ourselves, we were *making* them to somebody else's API. Take weather data as an example -- something a lot of apps depend on.
 
-OpenWeatherMap's One Call API charges about **$0.0015 per request** on their pay-as-you-go tier. At 100K requests per second:
+OpenWeatherMap's One Call API charges about **$0.0015 per request** on their pay-as-you-go tier. At 50K requests per second:
 
 | Time Window | Requests | Cost |
 |---|---|---|
-| 1 second | 100,000 | **$150** |
-| 1 minute | 6,000,000 | **$9,000** |
-| 1 hour | 360,000,000 | **$540,000** |
-| 1 day | 8,640,000,000 | **$12.96 million** |
+| 1 second | 50,000 | **$75** |
+| 1 minute | 3,000,000 | **$4,500** |
+| 1 hour | 180,000,000 | **$270,000** |
+| 1 day | 4,320,000,000 | **$6.48 million** |
 
-That's **$150 per second**. The time it takes you to read this sentence, $600 gone. Step away for a coffee break, come back to a $90,000 bill.
+That's **$75 per second**. The time it takes you to read this sentence, $300 gone. Step away for a coffee break, come back to a $45,000 bill.
 
-And that's a *cheap* API. Many enterprise APIs charge $0.01-$0.05 per request. At $0.01/call, we're looking at **$86.4 million per day**.
+And that's a *cheap* API. Many enterprise APIs charge $0.01-$0.05 per request. At $0.01/call, we're looking at **$43.2 million per day**.
 
 This is why handling these requests *yourself* matters. If your architecture can't serve this traffic from your own infrastructure, you're either paying someone else an absurd amount to handle it, or you're dropping requests and losing users. Every request you can serve from your own stack, from your own cache, from your own database -- that's money staying in your pocket.
 
@@ -47,7 +47,7 @@ You'd be surprised. It's not just FAANG.
 - **Payment processors** like Stripe and Square need to process high-throughput transaction volumes with zero room for dropped requests.
 - **IoT platforms** ingesting sensor data from millions of devices -- each device reporting every few seconds adds up fast.
 
-Even if you never *need* 100K req/s in production, understanding what it takes to get there teaches you more about systems engineering than any textbook. You learn where the bottlenecks hide, what the hardware actually does, and why certain architectural decisions matter.
+Even if you never *need* 50K req/s in production, understanding what it takes to get there teaches you more about systems engineering than any textbook. You learn where the bottlenecks hide, what the hardware actually does, and why certain architectural decisions matter.
 
 That's what this series is about. Let's start from scratch and see how far we can push it.
 
@@ -115,7 +115,7 @@ Load test config: 10 concurrent connections, 10 seconds duration.
 
 **5,426 requests per second.** Zero errors. Latency averaging just **1.27 ms** -- that's fast. Each request is querying a 100,000-row table, finding the right 20 rows out of 5,000 possible sellers, and serializing them to JSON. Not bad for a completely untuned stack.
 
-But we're going to 100K. That means we need roughly an **18x improvement** from here.
+But we're going to 50K. That means we need roughly a **9x improvement** from here.
 
 ### Bottleneck #0: We're Only Using One CPU Core
 
@@ -498,4 +498,109 @@ At this point, we've optimized away the database, the serialization, and the fra
 
 ---
 
-*Next up: Step 5 -- squeezing the last drops from the HTTP layer.*
+## Step 5: HTTP Pipelining -- Honest Numbers and the Server's True Ceiling
+
+### What We Changed
+
+This step was about finding how much more we could wring out of the stack. We tried four things. Most of them didn't work. One of them changed everything -- but not in the way you'd expect.
+
+**1. Buffer Caching (No Effect)**
+
+We switched the LRU cache from storing JSON strings to pre-allocated `Buffer` objects, hoping to skip Node's internal string-to-Buffer conversion on `socket.write()`. Result: no measurable improvement. Node's `socket.write()` already handles string conversion efficiently -- the explicit `Buffer.from()` on cache miss actually adds a small allocation cost that cancels out any write-side savings.
+
+**2. HTTP Keep-Alive Tuning (No Effect)**
+
+We tuned Fastify's `keepAliveTimeout`, `connectionTimeout`, `requestTimeout`, and `backlog`. Result: nothing. autocannon already reuses connections for the full test duration, and the default timeouts weren't causing any issues. The kernel's listen backlog wasn't the bottleneck at 200 connections.
+
+**3. uWebSockets.js Experiment (Worse)**
+
+We built a separate server using `uWebSockets.js` -- a C++ HTTP server with a thin JS binding that benchmarks 3-5x faster than Fastify in isolation. Result: **12,060 req/s** (down from 24,738). The problem: uWS manages its own socket layer and doesn't integrate with Node's `cluster` module for port sharing. Each worker fought for the port instead of cooperating. The CPU only hit 88% -- the workers were tripping over each other. The experiment lives at `src/server-uws.js` for future exploration with uWS's native threading model.
+
+**4. HTTP Pipelining (The Big One)**
+
+This is where it gets interesting -- and where we need to be honest.
+
+HTTP pipelining lets a single TCP connection send multiple requests *without waiting for each response*. Instead of the normal back-and-forth:
+
+```
+Normal:    Req1 → [wait] → Res1 → Req2 → [wait] → Res2 → Req3 → [wait] → Res3
+
+Pipelined: Req1 Req2 Req3 Req4 ... Req10 → [wait] → Res1 Res2 Res3 ... Res10
+```
+
+We added `pipelining: 10` to autocannon and dropped to 1 worker (since pipelining generates so much more load per thread):
+
+```javascript
+const result = await autocannon({
+  url: TARGET,
+  connections: 100,
+  pipelining: 10,
+  duration: 10,
+  workers: 1,
+  requests,
+});
+```
+
+With 100 connections × pipelining 10, there are up to **1,000 requests in-flight** simultaneously, versus 200 before. The server reads batches of requests from each socket buffer in tight loops, processes them, and streams responses back in bursts. Less idle time, fewer event loop wake-ups, better TCP packet utilization.
+
+### The Results
+
+Here's where we show both numbers, because they tell different stories.
+
+**Realistic (no pipelining) -- what production traffic looks like:**
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **24,738** |
+| Latency (avg) | 8.9 ms |
+| Latency (p50) | 5 ms |
+| Latency (p99) | 21 ms |
+| Latency (max) | 3,337 ms |
+| Total requests | 247,426 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~91.5 MB/s |
+| Peak CPU (avg across cores) | ~100% |
+
+This is the same number as Step 4. The Buffer caching and keep-alive tuning didn't move the needle. **24,738 req/s is our honest, production-realistic throughput** -- each connection sends one request and waits for the response, just like a real browser, mobile app, or API client.
+
+**Pipelined (10x in-flight) -- the server's theoretical ceiling:**
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **56,750** |
+| Latency (avg) | 20.03 ms |
+| Latency (p50) | 15 ms |
+| Latency (p99) | 67 ms |
+| Latency (max) | 3,169 ms |
+| Total requests | 567,455 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~209.4 MB/s |
+| Peak CPU (avg across cores) | ~100% |
+
+**56,750 req/s** -- over **half a million requests** in 10 seconds, pushing **209 MB/s** (~1.7 gigabits) of JSON. That's a **2.29x jump** over the non-pipelined number using the exact same server code.
+
+But let's be real about what this number means.
+
+### A Note on Honesty
+
+HTTP pipelining was defined in the HTTP/1.1 spec but was never widely adopted. Browsers disabled it because of head-of-line blocking problems. Most proxies and CDNs don't support it. HTTP/2 replaced it with proper multiplexing (out-of-order responses). In practice, almost no real-world client sends pipelined HTTP/1.1 requests.
+
+So the **24,738 number is our real throughput**. That's what you'd see in production with real clients. The **56,750 number tells us something different**: it reveals that the server has massive untapped capacity. When requests arrive efficiently (batched, no round-trip gaps), the server can handle 2.3x more. The gap between those two numbers is pure HTTP/1.1 protocol overhead -- the cost of the request-response dance.
+
+In the real world, you'd close that gap not with pipelining, but with **HTTP/2** (which does real-world multiplexing), **batched API endpoints** (one request that returns data for multiple UUIDs), or **connection pooling at the load balancer level**.
+
+For this journey, the pipelined number represents the ceiling we *could* reach with a more efficient transport layer. The non-pipelined number is where we actually are.
+
+### Bottleneck #5: The Protocol and the Machine
+
+With the realistic number (**24,738 req/s**), we're at **100% CPU** and limited by HTTP/1.1's request-response synchronization. Half of the CPU time is spent in the gaps *between* requests -- waiting for the client to receive the response and send the next one. Pipelining proves this by filling those gaps and doubling throughput.
+
+With the pipelined number (**56,750 req/s**), we've exceeded our **50K goal** but we're bumping up against the single-machine ceiling. The load generator (1 autocannon thread) is close to its own limits, and the 10 server workers are saturating all 10 cores.
+
+The journey to 50K on a single machine is essentially about two things: can the server process requests fast enough (yes -- 56K proves it), and can real-world clients push requests fast enough to keep it busy (not with HTTP/1.1 from a single machine). For production at this scale, HTTP/2, multiple client machines, or a load balancer in front would close the gap.
+
+---
+
+*We hit the ceiling. From 5,426 to 56,750 -- a 10.5x improvement. The server can handle 50K+. Getting real clients to push that hard is a different problem.*

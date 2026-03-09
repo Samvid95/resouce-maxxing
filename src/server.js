@@ -13,12 +13,19 @@ if (cluster.isPrimary) {
     cluster.fork();
   });
 } else {
-  const fastify = require("fastify")({ logger: false });
+  const fastify = require("fastify")({
+    logger: false,
+    keepAliveTimeout: 30_000,
+    connectionTimeout: 10_000,
+    forceCloseConnections: false,
+    requestTimeout: 10_000,
+  });
   const { pool, getRecordsByGroupId } = require("./db");
   const { LRUCache } = require("./cache");
 
   const PORT = process.env.PORT || 3000;
   const cache = new LRUCache();
+  const JSON_CT = "application/json; charset=utf-8";
 
   const recordSchema = {
     type: "object",
@@ -55,8 +62,7 @@ if (cluster.isPrimary) {
 
       const cached = cache.get(uuid);
       if (cached) {
-        reply.header("content-type", "application/json; charset=utf-8");
-        reply.header("x-cache", "HIT");
+        reply.header("content-type", JSON_CT);
         return reply.send(cached);
       }
 
@@ -67,12 +73,11 @@ if (cluster.isPrimary) {
       }
 
       const body = { group_id: uuid, count: rows.length, records: rows };
-      const serialized = JSON.stringify(body);
-      cache.set(uuid, serialized);
+      const buf = Buffer.from(JSON.stringify(body));
+      cache.set(uuid, buf);
 
-      reply.header("content-type", "application/json; charset=utf-8");
-      reply.header("x-cache", "MISS");
-      return reply.send(serialized);
+      reply.header("content-type", JSON_CT);
+      return reply.send(buf);
     },
   });
 
@@ -88,7 +93,7 @@ if (cluster.isPrimary) {
     handler: async () => ({ status: "ok" }),
   });
 
-  fastify.listen({ port: PORT, host: "::" }, (err) => {
+  fastify.listen({ port: PORT, host: "::", backlog: 2048 }, (err) => {
     if (err) {
       console.error(err);
       process.exit(1);

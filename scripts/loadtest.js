@@ -12,8 +12,9 @@ const UUIDS = Array.from({ length: NUM_SELLERS }, (_, i) => {
 
 const TARGET = process.env.TARGET || "http://localhost:3000";
 const DURATION = parseInt(process.env.DURATION || "10", 10);
-const CONNECTIONS = parseInt(process.env.CONNECTIONS || "200", 10);
-const WORKERS = parseInt(process.env.WORKERS || "2", 10);
+const CONNECTIONS = parseInt(process.env.CONNECTIONS || "100", 10);
+const PIPELINING = parseInt(process.env.PIPELINING || "10", 10);
+const WORKERS = parseInt(process.env.WORKERS || "1", 10);
 
 function getCpuTimes() {
   return os.cpus().map((cpu) => {
@@ -33,7 +34,7 @@ function cpuDelta(prev, curr) {
 
 async function run() {
   console.log(
-    `Load test: ${CONNECTIONS} connections, ${WORKERS} workers for ${DURATION}s against ${TARGET}`
+    `Load test: ${CONNECTIONS} connections, pipelining ${PIPELINING}, ${WORKERS} workers for ${DURATION}s against ${TARGET}`
   );
 
   const cpuSnapshots = [];
@@ -50,6 +51,7 @@ async function run() {
   const result = await autocannon({
     url: TARGET,
     connections: CONNECTIONS,
+    pipelining: PIPELINING,
     duration: DURATION,
     workers: WORKERS,
     requests,
@@ -69,6 +71,7 @@ async function run() {
       target: TARGET,
       duration: DURATION,
       connections: CONNECTIONS,
+      pipelining: PIPELINING,
       workers: WORKERS,
     },
     latency: {
