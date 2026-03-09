@@ -12,9 +12,9 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 
 | Step | Optimization | Req/s | Improvement |
 |------|-------------|-------|-------------|
-| 0 | Baseline (untuned Express + pg) | 5,661 | -- |
+| 0 | Baseline (untuned Express + pg) | 35 | -- |
 
-**Target: 100,000 req/s** -- we need an 18x improvement from here.
+**Target: 100,000 req/s** -- we need a ~2,857x improvement from here.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 ```
 
 - **API**: Single endpoint `GET /api/data/:uuid` that queries a `records` table by `group_id` and returns JSON.
-- **Database**: PostgreSQL 16 in Docker. 10 UUIDs, ~50 rows of seed data, B-tree index on `group_id`.
+- **Database**: PostgreSQL 16 in Docker. 100,000 rows of seed data (10 UUIDs x 10,000 rows each), B-tree index on `group_id`.
 - **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with CPU sampling, results saved as JSON to `results/`.
 
 ## Quick Start

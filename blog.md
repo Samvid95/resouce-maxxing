@@ -63,7 +63,7 @@ The simplest possible architecture that actually resembles a real application:
 [autocannon] --HTTP--> [Express.js] --SQL--> [PostgreSQL in Docker]
 ```
 
-**Database**: PostgreSQL 16 running in a Docker container. One table called `records` with 10 distinct UUIDs, each having 5-6 rows of dummy product data (name, category, price, active flag, timestamp). There's a B-tree index on `group_id`.
+**Database**: PostgreSQL 16 running in a Docker container. One table called `records` with **100,000 rows** of dummy product data -- 10 distinct UUIDs, each with 10,000 rows (name, category, price, active flag, timestamp). There's a B-tree index on `group_id`. This isn't a toy dataset; every single API call has to fetch, serialize, and transmit 10,000 rows of JSON. That's the kind of payload size that separates benchmarks from reality.
 
 **API Server**: A single Express.js process. One endpoint: `GET /api/data/:uuid`. It takes a UUID, queries Postgres, and returns the matching rows as JSON.
 
@@ -102,32 +102,32 @@ Load test config: 10 concurrent connections, 10 seconds duration.
 
 | Metric | Value |
 |---|---|
-| **Requests/sec (avg)** | **5,661** |
-| Latency (avg) | 1.3 ms |
-| Latency (p50) | 1 ms |
-| Latency (p99) | 4 ms |
-| Latency (max) | 61 ms |
-| Total requests | 62,267 |
+| **Requests/sec (avg)** | **35** |
+| Latency (avg) | 282.12 ms |
+| Latency (p50) | 278 ms |
+| Latency (p99) | 486 ms |
+| Latency (max) | 519 ms |
+| Total requests | 350 |
 | Errors | 0 |
 | Timeouts | 0 |
-| Throughput | ~7 MB/s |
-| Peak CPU (avg across cores) | 20.4% |
+| Throughput | ~60 MB/s |
+| Peak CPU (avg across cores) | 20.5% |
 
-**5,661 requests per second.** Zero errors. Not bad for a completely untuned stack -- that's already enough to handle a solid mid-tier production workload.
+**35 requests per second.** Zero errors, but *thirty-five*. That's it. Each request is hauling back 10,000 rows of JSON, and it shows -- average latency is sitting at **282 ms**, with p99 creeping up to nearly half a second.
 
-But we're going to 100K. That means we need roughly an **18x improvement** from here.
+To put that in perspective: at 35 req/s, it would take us almost **48 minutes** to serve a single million requests. We need to get to 100K req/s. That's a **~2,857x improvement** from where we're standing. We've got a long road ahead.
 
-### Bottleneck #0: We're Only Using One CPU Core
+### Bottleneck #0: Death by Serialization (and a Single Core)
 
-Look at that CPU number: **20.4% average across all cores**. That might *look* like the machine is barely breaking a sweat. It's not. It's misleading.
+There are two things crushing us here, and they're stacking on top of each other.
 
-Node.js is single-threaded. The Express server runs on **one core**. That one core is likely pegged close to 100% while every other core on the machine sits idle, doing nothing. When you average them all together, it *looks* like 20% utilization. In reality, one core is maxed out and the rest are wasted.
+**First: the payload.** Every request fetches 10,000 rows from Postgres and serializes them into a massive JSON blob. That's not a light operation. `JSON.stringify()` on an array of 10,000 objects with multiple fields is CPU-intensive work -- and it happens on *every single request*. The ~60 MB/s throughput tells us we're moving a lot of data, but the 282ms latency tells us we're spending most of our time *preparing* it.
 
-This is the fundamental constraint of Node.js out of the box. It doesn't matter how many cores your machine has -- 4, 8, 16 -- a single Node process will only ever use one of them. We're effectively running a V8 engine on a single piston while the rest of the cylinders are disconnected.
+**Second: single-threaded Node.js.** Look at that CPU number: **20.5% average across all cores**. That might *look* like the machine is barely breaking a sweat. It's misleading. Node.js runs on **one core**. That one core is likely pegged near 100% -- grinding through query results and JSON serialization -- while every other core sits idle. Average them together and it *looks* like 20%. In reality, we're maxing out the only engine we've got.
 
-The load test is also only using 10 concurrent connections. That's a relatively gentle amount of pressure. We might be able to squeeze more out of this single process just by turning up the concurrency -- but we'll quickly hit that single-core ceiling.
+Together, these two bottlenecks create a brutal ceiling: each request takes ~282ms of single-threaded CPU time, mostly spent serializing JSON, and we can only process them one-at-a-time on a single core. With 10 concurrent connections fighting over that one core, we get 35 req/s. That's the math.
 
-**To break past this, we need to use all the cores.** That's what's next.
+**To break past this, we need to attack both fronts** -- use all available cores, and find a way to stop paying the serialization tax on every request.
 
 ---
 
