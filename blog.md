@@ -8,33 +8,15 @@ A hands-on journey of pushing a simple Node.js + PostgreSQL stack to its absolut
 
 Before we start optimizing anything, let's talk about why this number matters and what it actually *means*.
 
-### Putting 50K req/s Into Perspective
+### What Does 50K req/s Actually Cost?
 
-50,000 requests per second sounds abstract. Let's make it concrete.
+50,000 requests per second sounds abstract. Let's make it concrete with money.
 
-- **Per minute**, that's **3 million requests**. An average mid-size e-commerce site handles about 1,000 requests per minute. We're talking about the traffic of 3,000 of those sites. Combined. On one server.
-- **Per hour**, that's **180 million requests**. Instagram gets roughly 500 million daily active users. We'd burn through a request for each one of them in under 3 hours.
-- **Per day**, that's **4.32 billion requests**. That's more than half the world's population. One request per person, served from a single machine, in a single day.
-- **Google Search** handles roughly 99,000 queries per second globally. Hitting 50K req/s means your single service is handling **half of Google Search's** query volume.
+Say instead of serving these requests ourselves, we were *making* them to somebody else's API. Take weather data as an example -- something a lot of apps depend on.
 
-If you sold out an NFL stadium (70,000 seats), every single fan would need to make a request roughly every 1.4 seconds -- non-stop, all game long -- to generate this kind of load.
+OpenWeatherMap's One Call API charges about **$0.0015 per request** on their pay-as-you-go tier. At 50K requests per second, that's **180 million requests per hour** -- and an **$270,000 hourly bill**. Step away for a long lunch and come back to over a million dollars in API charges.
 
-### What Does This Cost in the Real World?
-
-Let's say instead of serving these requests ourselves, we were *making* them to somebody else's API. Take weather data as an example -- something a lot of apps depend on.
-
-OpenWeatherMap's One Call API charges about **$0.0015 per request** on their pay-as-you-go tier. At 50K requests per second:
-
-| Time Window | Requests | Cost |
-|---|---|---|
-| 1 second | 50,000 | **$75** |
-| 1 minute | 3,000,000 | **$4,500** |
-| 1 hour | 180,000,000 | **$270,000** |
-| 1 day | 4,320,000,000 | **$6.48 million** |
-
-That's **$75 per second**. The time it takes you to read this sentence, $300 gone. Step away for a coffee break, come back to a $45,000 bill.
-
-And that's a *cheap* API. Many enterprise APIs charge $0.01-$0.05 per request. At $0.01/call, we're looking at **$43.2 million per day**.
+And that's a *cheap* API. Many enterprise APIs charge $0.01-$0.05 per request. At $0.01/call, that same hour costs **$1.8 million**.
 
 This is why handling these requests *yourself* matters. If your architecture can't serve this traffic from your own infrastructure, you're either paying someone else an absurd amount to handle it, or you're dropping requests and losing users. Every request you can serve from your own stack, from your own cache, from your own database -- that's money staying in your pocket.
 
