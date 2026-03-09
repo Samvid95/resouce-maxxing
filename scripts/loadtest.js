@@ -15,12 +15,19 @@ const DURATION = parseInt(process.env.DURATION || "10", 10);
 const CONNECTIONS = parseInt(process.env.CONNECTIONS || "100", 10);
 const WORKERS = parseInt(process.env.WORKERS || String(os.cpus().length), 10);
 
-function sampleCpu() {
-  const cpus = os.cpus();
-  return cpus.map((cpu, i) => {
+function getCpuTimes() {
+  return os.cpus().map((cpu) => {
     const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
-    const idle = cpu.times.idle;
-    return { core: i, usagePct: +(((total - idle) / total) * 100).toFixed(1) };
+    return { idle: cpu.times.idle, total };
+  });
+}
+
+function cpuDelta(prev, curr) {
+  return curr.map((c, i) => {
+    const dTotal = c.total - prev[i].total;
+    const dIdle = c.idle - prev[i].idle;
+    if (dTotal === 0) return { core: i, usagePct: 0 };
+    return { core: i, usagePct: +(((dTotal - dIdle) / dTotal) * 100).toFixed(1) };
   });
 }
 
@@ -30,8 +37,12 @@ async function run() {
   );
 
   const cpuSnapshots = [];
+  let prevCpuTimes = getCpuTimes();
   const cpuInterval = setInterval(() => {
-    cpuSnapshots.push({ ts: Date.now(), cores: sampleCpu() });
+    const currCpuTimes = getCpuTimes();
+    const cores = cpuDelta(prevCpuTimes, currCpuTimes);
+    prevCpuTimes = currCpuTimes;
+    cpuSnapshots.push({ ts: Date.now(), cores });
   }, 1000);
 
   const requests = UUIDS.map((uuid) => ({ path: `/api/data/${uuid}`, method: "GET" }));

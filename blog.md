@@ -224,4 +224,87 @@ We need to tune Postgres itself. More shared buffers, more work memory, and poss
 
 ---
 
-*Next up: Step 2 -- tuning PostgreSQL and fixing our CPU metrics.*
+## Step 2: Tuning Postgres and Seeing the Truth
+
+### What We Changed
+
+Two categories of changes this time: one that makes things faster, and one that finally lets us *see* how fast things actually are.
+
+**1. Fixed CPU Measurement**
+
+Our CPU numbers have been lying to us. The `os.cpus()` API returns cumulative times since the system booted -- not since the test started. On a machine that's been running for hours, a 10-second load test barely nudges the cumulative averages. We were reading 20.5% CPU in both Step 0 and Step 1, which is like checking your car's *lifetime* average speed to see how fast you're going right now.
+
+The fix: delta-based sampling. Each snapshot now computes the difference from the previous snapshot, giving us actual per-second CPU usage:
+
+```javascript
+function getCpuTimes() {
+  return os.cpus().map((cpu) => {
+    const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+    return { idle: cpu.times.idle, total };
+  });
+}
+
+function cpuDelta(prev, curr) {
+  return curr.map((c, i) => {
+    const dTotal = c.total - prev[i].total;
+    const dIdle = c.idle - prev[i].idle;
+    if (dTotal === 0) return { core: i, usagePct: 0 };
+    return { core: i, usagePct: +(((dTotal - dIdle) / dTotal) * 100).toFixed(1) };
+  });
+}
+```
+
+**2. PostgreSQL Tuning**
+
+We created a custom `postgresql.conf` and mounted it into the Docker container. The defaults are designed for a small shared server from 2005, not a dedicated performance test. Here's what we changed:
+
+| Setting | Default | Tuned | Why |
+|---|---|---|---|
+| `shared_buffers` | 128 MB | **1 GB** | Main buffer cache -- our entire dataset (11 MB) lives in RAM now |
+| `effective_cache_size` | 4 GB | **3 GB** | Tells the query planner how much OS cache to expect |
+| `work_mem` | 4 MB | **32 MB** | More memory per sort/hash operation |
+| `max_connections` | 100 | **200** | Headroom above our 80 pool connections |
+| `synchronous_commit` | on | **off** | Don't wait for WAL flush -- we're read-heavy |
+| `random_page_cost` | 4.0 | **1.1** | Data is in memory, random I/O is nearly free |
+| `wal_level` | replica | **minimal** | No replication, less WAL overhead |
+
+We also gave the Docker container real resources: **4 GB memory limit** with **1 GB shared memory** (`shm_size`) to support the larger `shared_buffers`. Previously it was running with Docker's defaults -- about 2 GB and 64 MB shm.
+
+The `synchronous_commit = off` deserves a callout. By default, Postgres waits for every transaction's WAL (write-ahead log) entry to be flushed to disk before confirming. For a read-heavy benchmark where we never write, this shouldn't matter much -- but turning it off removes the overhead from Postgres's internal bookkeeping and any background checkpoint activity.
+
+Setting `random_page_cost = 1.1` (down from 4.0) is another subtle one. The default assumes spinning disks where random I/O is 4x more expensive than sequential. But our data fits entirely in `shared_buffers`. Random vs sequential is meaningless when everything is in RAM. This nudges the planner toward index scans instead of sequential scans.
+
+### The Results
+
+| Metric | Value |
+|---|---|
+| **Requests/sec (avg)** | **11,110** |
+| Latency (avg) | 8.75 ms |
+| Latency (p50) | 7 ms |
+| Latency (p99) | 33 ms |
+| Latency (max) | 820 ms |
+| Total requests | 111,087 |
+| Errors | 0 |
+| Timeouts | 0 |
+| Throughput | ~41.6 MB/s |
+| Peak CPU (avg across cores) | 100% |
+
+**Up from 8,950 to 11,110 req/s -- a 1.24x improvement** over Step 1, and **2.05x over our original baseline**. We crossed 100,000 total requests in a 10-second window for the first time.
+
+But the real headline is that CPU number. **100%.** Every single core, maxed out, for the entire duration of the test. That's not 20.5% anymore -- that was a ghost. Now we're seeing reality, and reality says the machine is fully saturated.
+
+Latency actually *improved* despite higher throughput: average dropped from 11 ms to **8.75 ms**, and p99 nearly halved from 61 ms to **33 ms**. The Postgres tuning made each query faster, which freed up cycles for more concurrent requests.
+
+### Bottleneck #2: Total CPU Saturation
+
+The machine is at **100% CPU** across all 10 cores. But here's the thing -- it's not just the server that's eating those cycles. We're running **10 Node.js server workers** and **10 autocannon worker threads** on the same 10-core machine, plus Postgres in Docker. That's 20+ processes fighting for 10 cores.
+
+This is like timing a race where the referee is also one of the runners. The load generator is stealing CPU from the server and vice versa. We can't know if we'd get 15K, 20K, or more req/s if the server had all 10 cores to itself.
+
+The p99-to-avg ratio is **3.8x** (33 ms vs 8.75 ms), and the max latency hit **820 ms**. That tail is likely context-switching overhead -- when 20+ processes compete for 10 cores, some requests inevitably get paused mid-execution while the OS scheduler swaps processes in and out.
+
+To go further, we need to either get more CPU (bigger machine) or get more throughput per CPU cycle. That means replacing Express with something faster -- the middleware chain, `JSON.stringify()` on every response, and the request parsing overhead are all burning cycles that a leaner framework could save.
+
+---
+
+*Next up: Step 3 -- replacing Express with something that doesn't waste cycles.*

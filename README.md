@@ -14,8 +14,9 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 |------|-------------|-------|-------------|
 | 0 | Baseline (untuned Express + pg) | 5,426 | -- |
 | 1 | Cluster mode + prepared statements + pool scaling | 8,950 | 1.65x |
+| 2 | PostgreSQL tuning + fixed CPU measurement | 11,110 | 2.05x |
 
-**Target: 100,000 req/s** -- we need an ~11x improvement from here.
+**Target: 100,000 req/s** -- we need a ~9x improvement from here.
 
 ## Architecture
 
@@ -28,8 +29,8 @@ Every step is documented in [`blog.md`](blog.md) with real benchmarks, the exact
 ```
 
 - **API**: `GET /api/data/:uuid` -- queries `records` by `group_id`, returns JSON. Runs in **cluster mode** across all CPU cores.
-- **Database**: PostgreSQL 16 in Docker. 100,000 rows (5,000 sellers x 20 items), B-tree index on `group_id`. Uses **prepared statements** and cluster-aware connection pooling (80 total).
-- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with **multi-worker threads**, 100 connections, CPU sampling, results saved as JSON to `results/`.
+- **Database**: PostgreSQL 16 in Docker with **custom tuning** (1 GB shared_buffers, synchronous_commit off, random_page_cost 1.1). Uses **prepared statements** and cluster-aware connection pooling (80 total).
+- **Load Testing**: [autocannon](https://github.com/mcollina/autocannon) with **multi-worker threads**, 100 connections, **delta-based CPU sampling**, results saved as JSON to `results/`.
 
 ## Quick Start
 
@@ -72,12 +73,13 @@ npm run loadtest
 │   ├── server.js          # Clustered Express API server (multi-core)
 │   └── db.js              # PostgreSQL pool + prepared statements
 ├── db/
-│   └── init.sql           # Schema, indexes, and seed data
+│   ├── init.sql           # Schema, indexes, and seed data
+│   └── postgresql.conf    # Tuned PostgreSQL configuration
 ├── scripts/
-│   └── loadtest.js        # Load test with CPU sampling
+│   └── loadtest.js        # Load test with delta-based CPU sampling
 ├── results/               # Load test output (JSON)
 ├── blog.md                # The optimization journey, step by step
-├── docker-compose.yml     # PostgreSQL 16 container
+├── docker-compose.yml     # PostgreSQL 16 container (tuned, 4 GB RAM)
 └── package.json
 ```
 
